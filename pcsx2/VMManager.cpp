@@ -184,6 +184,12 @@ const char* VMManager::GetDiscSerial()
 	return s_game_serial;
 }
 
+std::string VMManager::GetDiscSerialCopy()
+{
+	Threading::ScopedRecursiveLock lock(s_info_mutex);
+	return s_game_serial;
+}
+
 void VMManager::Internal::UpdateEmuFolders()
 {
 	const std::string old_cheats_directory(EmuFolders::Cheats);

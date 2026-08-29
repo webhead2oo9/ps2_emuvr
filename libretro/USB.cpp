@@ -15,8 +15,11 @@
 
 #include <cstdlib>
 
+#include <retro_atomic.h>
+
 #include "../pcsx2/USB/USB.h"
 #include "../pcsx2/USB/libretro-usb/USBinternal.h"
+#include "../pcsx2/USB/libretro-usb/usb-guncon2.h"
 #include "../pcsx2/USB/libretro-usb/usb-hid.h"
 #include "../pcsx2/SaveState.h"
 
@@ -36,9 +39,18 @@ static OHCIState* s_qemu_ohci   = nullptr;
 static s64        s_usb_clocks  = 0;
 static s64        s_usb_remaining = 0;
 
-static int        s_port_device[USB::NUM_PORTS] = { USB_DEV_NONE, USB_DEV_NONE };
-static unsigned   s_input_port[USB::NUM_PORTS]  = { 0, 1 };
-static USBDevice* s_usb_device[USB::NUM_PORTS]  = { nullptr, nullptr };
+/* Desired devices are written by retro_set_controller_port_device() on the
+ * libretro thread and consumed by USBasync() on the CPU/IOP thread. */
+static retro_atomic_int_t s_port_device[USB::NUM_PORTS] = {
+	RETRO_ATOMIC_INT_INITIALIZER(USB_DEV_NONE), RETRO_ATOMIC_INT_INITIALIZER(USB_DEV_NONE)};
+static retro_atomic_int_t s_input_port[USB::NUM_PORTS] = {
+	RETRO_ATOMIC_INT_INITIALIZER(0), RETRO_ATOMIC_INT_INITIALIZER(1)};
+static retro_atomic_int_t s_devices_dirty = RETRO_ATOMIC_INT_INITIALIZER(0);
+
+/* Attached-device metadata is owned exclusively by the CPU/IOP thread. */
+static USBDevice* s_usb_device[USB::NUM_PORTS] = { nullptr, nullptr };
+static int        s_usb_device_type[USB::NUM_PORTS] = { USB_DEV_NONE, USB_DEV_NONE };
+static unsigned   s_usb_device_input_port[USB::NUM_PORTS] = { 0, 1 };
 
 /* From PAD.cpp - the libretro input_state callback the frontend installed. */
 extern retro_input_state_t PADGetInputStateCallback(void);
@@ -51,8 +63,9 @@ void USBSetPortDevice(unsigned port, int device, unsigned input_port)
 {
 	if (port < USB::NUM_PORTS)
 	{
-		s_port_device[port] = device;
-		s_input_port[port]  = input_port;
+		retro_atomic_store_release_int(&s_input_port[port], static_cast<int>(input_port));
+		retro_atomic_store_release_int(&s_port_device[port], device);
+		retro_atomic_store_release_int(&s_devices_dirty, 1);
 	}
 }
 
@@ -64,14 +77,19 @@ static OHCIPort& GetOHCIPort(u32 port)
 
 static void USBCreateDevice(u32 port)
 {
+	const int device = retro_atomic_load_acquire_int(&s_port_device[port]);
+	const unsigned input_port = static_cast<unsigned>(retro_atomic_load_acquire_int(&s_input_port[port]));
 	USBDevice* dev = nullptr;
-	switch (s_port_device[port])
+	switch (device)
 	{
 		case USB_DEV_KEYBOARD:
 			dev = usb_hid::usb_hid_create_kbd(port);
 			break;
 		case USB_DEV_MOUSE:
 			dev = usb_hid::usb_hid_create_mouse(port);
+			break;
+		case USB_DEV_GUNCON2:
+			dev = usb_guncon2::CreateDevice(port, input_port);
 			break;
 		default:
 			return;
@@ -83,17 +101,42 @@ static void USBCreateDevice(u32 port)
 	dev->attached = true;
 	usb_attach(&GetOHCIPort(port).port);
 	s_usb_device[port] = dev;
+	s_usb_device_type[port] = device;
+	s_usb_device_input_port[port] = input_port;
 }
 
 static void USBDestroyDevice(u32 port)
 {
 	USBDevice* dev = s_usb_device[port];
-	if (!dev)
-		return;
-	if (dev->klass.unrealize)
-		dev->klass.unrealize(dev);
-	GetOHCIPort(port).port.dev = nullptr;
+	if (dev)
+	{
+		USBPort& ohci_port = GetOHCIPort(port).port;
+		if (dev->state != USB_STATE_NOTATTACHED)
+			usb_detach(&ohci_port);
+		if (dev->klass.unrealize)
+			dev->klass.unrealize(dev);
+		ohci_port.dev = nullptr;
+	}
 	s_usb_device[port] = nullptr;
+	s_usb_device_type[port] = USB_DEV_NONE;
+	s_usb_device_input_port[port] = port;
+}
+
+static void USBReconcileDevices()
+{
+	for (u32 port = 0; port < USB::NUM_PORTS; port++)
+	{
+		const int desired_device = retro_atomic_load_acquire_int(&s_port_device[port]);
+		const unsigned desired_input_port = static_cast<unsigned>(retro_atomic_load_acquire_int(&s_input_port[port]));
+		if (s_usb_device_type[port] == desired_device &&
+			(s_usb_device_type[port] == USB_DEV_NONE || s_usb_device_input_port[port] == desired_input_port))
+		{
+			continue;
+		}
+
+		USBDestroyDevice(port);
+		USBCreateDevice(port);
+	}
 }
 
 int usb_get_ticks_per_second(void)
@@ -126,6 +169,7 @@ bool USBopen(void)
 
 	for (u32 port = 0; port < USB::NUM_PORTS; port++)
 		USBCreateDevice(port);
+	retro_atomic_store_release_int(&s_devices_dirty, 0);
 	return true;
 }
 
@@ -159,6 +203,7 @@ void USBreset(void)
 
 	for (port = 0; port < USB::NUM_PORTS; port++)
 		USBCreateDevice(port);
+	retro_atomic_store_release_int(&s_devices_dirty, 0);
 }
 
 void USBasync(u32 cycles)
@@ -166,15 +211,28 @@ void USBasync(u32 cycles)
 	if (!s_qemu_ohci)
 		return;
 
+	/* RetroArch commonly selects controller devices after retro_load_game(),
+	 * when USBopen() has already attached the initial set. Reconcile here so
+	 * creation/destruction remains on the CPU/IOP thread and takes effect
+	 * before the guest's next OHCI transaction. */
+	if (retro_atomic_exchange_int(&s_devices_dirty, 0))
+		USBReconcileDevices();
+
 	/* Pump one frame of frontend keyboard/mouse input into attached HID
-	 * devices before advancing the controller. */
+	 * devices before advancing the controller. GunCon input is published by
+	 * Input::Update on the libretro thread and must never pass through this
+	 * HID-only cast. Dispatch on the attached type rather than the pending
+	 * selection, since selections take effect at USBopen()/USBreset(). */
 	{
 		retro_input_state_t input_cb = PADGetInputStateCallback();
 		u32 port;
 		for (port = 0; port < USB::NUM_PORTS; port++)
 		{
-			if (s_usb_device[port])
-				usb_hid::usb_hid_update(s_usb_device[port], input_cb, s_input_port[port]);
+			if (s_usb_device[port] &&
+				(s_usb_device_type[port] == USB_DEV_KEYBOARD || s_usb_device_type[port] == USB_DEV_MOUSE))
+			{
+				usb_hid::usb_hid_update(s_usb_device[port], input_cb, s_usb_device_input_port[port]);
+			}
 		}
 	}
 

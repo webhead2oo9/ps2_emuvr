@@ -60,6 +60,8 @@ namespace VMManager
 
 	/// Returns the serial of the disc/executable currently running.
 	const char* GetDiscSerial();
+	/// Returns a thread-safe owned copy of the current disc serial.
+	std::string GetDiscSerialCopy();
 
 	/// Loads global settings (i.e. EmuConfig).
 	void LoadSettings();
