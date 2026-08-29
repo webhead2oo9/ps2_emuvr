@@ -2346,10 +2346,11 @@ void retro_init(void)
 		environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_base);
 
 		FileSystem::FindResultsArray results;
-		char bios_dir[PCSX2_PATH_MAX];
 
-		pcsx2_path_join(bios_dir, sizeof(bios_dir), system_base, "pcsx2/bios");
-		if (FileSystem::FindFiles(bios_dir, "*", FILESYSTEM_FIND_FILES, &results))
+		/* EmuVR's bundled PS2 core and setup documentation place BIOS files
+		 * directly in RetroArch's system directory. Keep that layout so an
+		 * updated core remains drop-in compatible with existing installs. */
+		if (FileSystem::FindFiles(system_base, "*", FILESYSTEM_FIND_FILES, &results))
 		{
 			u32 version, region;
 			static constexpr u32 MIN_BIOS_SIZE = 4 * _1mb;
@@ -2528,6 +2529,10 @@ bool retro_load_game(const struct retro_game_info* game)
 
 	EmuFolders::SetDefaults(s_settings_interface);
 	VMManager::SetDefaultSettings(s_settings_interface);
+
+	/* Unlike the rest of PCSX2's writable data, EmuVR historically keeps
+	 * BIOS files in RetroArch/system rather than system/pcsx2/bios. */
+	s_settings_interface.SetStringValue("Folders", "Bios", system_base);
 
 	SettingsInterface* bsi = Host::Internal::GetBaseSettingsLayer();
 	EmuFolders::LoadConfig(*bsi);

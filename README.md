@@ -6,6 +6,18 @@ upstream PCSX2 emulation relies on x86-64 recompilers, which do not exist on ARM
 this tree adds arm64 recompilers for the EE and IOP plus the supporting
 infrastructure to run correctly (and reasonably fast) on 64-bit ARM Linux devices.
 
+## EmuVR additions
+
+This fork adds EmuVR-compatible **GunCon 2** support through libretro's light-gun
+input device (`RETRO_DEVICE_LIGHTGUN`, frontend device ID `4`). It supports both
+PS2 USB ports, runtime controller attachment, GunCon buttons and coordinates,
+offscreen reload, game-specific calibration, and simultaneous DualShock 2 input.
+Time Crisis 3 (USA, `SLUS-20645`) has been verified in EmuVR.
+
+To match EmuVR's bundled-core convention, PS2 BIOS files are read directly from
+RetroArch's system directory (for example, `RetroArch/system/scph39001.bin`).
+Other PCSX2 data remains under `RetroArch/system/pcsx2/`.
+
 ## Status (arm64)
 
 Verified booting to real in-game content (Mega Man X7 gameplay, Gran Turismo 3
