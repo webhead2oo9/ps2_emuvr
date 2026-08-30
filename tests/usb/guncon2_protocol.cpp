@@ -173,8 +173,9 @@ static void TestRecalibrationSequence()
 	{
 		const auto report = protocol::BuildReportWithCalibration(input, calibration, parameters, &state);
 		CHECK((ReportButtons(report) & BUTTON_TRIGGER) == 0);
-		CHECK(state.reports_remaining == protocol::RECALIBRATION_REPORTS - report_index - 1);
-		if (report_index + 1 == protocol::RECALIBRATION_REPORTS)
+		const u16 reports_remaining = protocol::RECALIBRATION_REPORTS - report_index - 1;
+		CHECK(state.reports_remaining == reports_remaining);
+		if (reports_remaining < protocol::RECALIBRATION_ZERO_REPORTS)
 		{
 			CHECK(ReportCoordinate(report, 2) == 0);
 			CHECK(ReportCoordinate(report, 4) == 0);
@@ -186,7 +187,7 @@ static void TestRecalibrationSequence()
 		}
 	}
 
-	/* Holding the binding repeats the historical nine-report sequence. */
+	/* Holding the binding repeats the upstream twelve-report sequence. */
 	auto report = protocol::BuildReportWithCalibration(input, calibration, parameters, &state);
 	CHECK(state.reports_remaining == protocol::RECALIBRATION_REPORTS - 1);
 	CHECK(ReportCoordinate(report, 2) == 320);

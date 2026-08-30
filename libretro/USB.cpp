@@ -40,11 +40,22 @@ static s64        s_usb_clocks  = 0;
 static s64        s_usb_remaining = 0;
 
 /* Desired devices are written by retro_set_controller_port_device() on the
- * libretro thread and consumed by USBasync() on the CPU/IOP thread. */
-static retro_atomic_int_t s_port_device[USB::NUM_PORTS] = {
-	RETRO_ATOMIC_INT_INITIALIZER(USB_DEV_NONE), RETRO_ATOMIC_INT_INITIALIZER(USB_DEV_NONE)};
-static retro_atomic_int_t s_input_port[USB::NUM_PORTS] = {
-	RETRO_ATOMIC_INT_INITIALIZER(0), RETRO_ATOMIC_INT_INITIALIZER(1)};
+ * libretro thread and consumed by USBasync() on the CPU/IOP thread. Device and
+ * input port share one atomic word so the consumer cannot observe a mixed pair. */
+static constexpr int PackPortSelection(int device, unsigned input_port)
+{
+	return (device & 0xffff) | (static_cast<int>(input_port & 0xffff) << 16);
+}
+
+static void UnpackPortSelection(int selection, int* device, unsigned* input_port)
+{
+	*device = selection & 0xffff;
+	*input_port = static_cast<unsigned>(selection >> 16) & 0xffff;
+}
+
+static retro_atomic_int_t s_port_selection[USB::NUM_PORTS] = {
+	RETRO_ATOMIC_INT_INITIALIZER(PackPortSelection(USB_DEV_NONE, 0)),
+	RETRO_ATOMIC_INT_INITIALIZER(PackPortSelection(USB_DEV_NONE, 1))};
 static retro_atomic_int_t s_devices_dirty = RETRO_ATOMIC_INT_INITIALIZER(0);
 
 /* Attached-device metadata is owned exclusively by the CPU/IOP thread. */
@@ -63,8 +74,7 @@ void USBSetPortDevice(unsigned port, int device, unsigned input_port)
 {
 	if (port < USB::NUM_PORTS)
 	{
-		retro_atomic_store_release_int(&s_input_port[port], static_cast<int>(input_port));
-		retro_atomic_store_release_int(&s_port_device[port], device);
+		retro_atomic_store_release_int(&s_port_selection[port], PackPortSelection(device, input_port));
 		retro_atomic_store_release_int(&s_devices_dirty, 1);
 	}
 }
@@ -77,8 +87,9 @@ static OHCIPort& GetOHCIPort(u32 port)
 
 static void USBCreateDevice(u32 port)
 {
-	const int device = retro_atomic_load_acquire_int(&s_port_device[port]);
-	const unsigned input_port = static_cast<unsigned>(retro_atomic_load_acquire_int(&s_input_port[port]));
+	int device;
+	unsigned input_port;
+	UnpackPortSelection(retro_atomic_load_acquire_int(&s_port_selection[port]), &device, &input_port);
 	USBDevice* dev = nullptr;
 	switch (device)
 	{
@@ -126,8 +137,10 @@ static void USBReconcileDevices()
 {
 	for (u32 port = 0; port < USB::NUM_PORTS; port++)
 	{
-		const int desired_device = retro_atomic_load_acquire_int(&s_port_device[port]);
-		const unsigned desired_input_port = static_cast<unsigned>(retro_atomic_load_acquire_int(&s_input_port[port]));
+		int desired_device;
+		unsigned desired_input_port;
+		UnpackPortSelection(retro_atomic_load_acquire_int(&s_port_selection[port]),
+			&desired_device, &desired_input_port);
 		if (s_usb_device_type[port] == desired_device &&
 			(s_usb_device_type[port] == USB_DEV_NONE || s_usb_device_input_port[port] == desired_input_port))
 		{
@@ -169,7 +182,8 @@ bool USBopen(void)
 
 	for (u32 port = 0; port < USB::NUM_PORTS; port++)
 		USBCreateDevice(port);
-	retro_atomic_store_release_int(&s_devices_dirty, 0);
+	/* Do not clear s_devices_dirty here: a frontend selection may race this
+	 * open, and USBasync() must still reconcile the latest packed selection. */
 	return true;
 }
 
@@ -203,7 +217,7 @@ void USBreset(void)
 
 	for (port = 0; port < USB::NUM_PORTS; port++)
 		USBCreateDevice(port);
-	retro_atomic_store_release_int(&s_devices_dirty, 0);
+	/* As in USBopen(), preserve a concurrently published dirty notification. */
 }
 
 void USBasync(u32 cycles)

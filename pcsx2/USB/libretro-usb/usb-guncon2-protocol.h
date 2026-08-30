@@ -42,7 +42,8 @@ struct InputSnapshot
 namespace protocol
 {
 constexpr u16 PROGRESSIVE_FLAG = 0x0100;
-constexpr u16 RECALIBRATION_REPORTS = 9;
+constexpr u16 RECALIBRATION_REPORTS = 12;
+constexpr u16 RECALIBRATION_ZERO_REPORTS = 5;
 
 inline constexpr std::array<u8, 18> DEVICE_DESCRIPTOR = {
 	0x12, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08,

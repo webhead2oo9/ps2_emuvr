@@ -130,7 +130,9 @@ std::array<u8, 6> BuildReportWithCalibration(const InputSnapshot& input, const C
 	{
 		Position position = state->latched_position;
 		state->reports_remaining--;
-		if (state->reports_remaining == 0)
+		/* Match PCSX2's GunCon 2 timing exactly: games wait through the
+		 * latched reports, then detect calibration from five (0, 0) polls. */
+		if (state->reports_remaining < RECALIBRATION_ZERO_REPORTS)
 			position = {0, 0};
 		return EncodeReport(input.buttons | BUTTON_TRIGGER, position, parameters);
 	}

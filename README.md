@@ -14,6 +14,16 @@ PS2 USB ports, runtime controller attachment, GunCon buttons and coordinates,
 offscreen reload, game-specific calibration, and simultaneous DualShock 2 input.
 Time Crisis 3 (USA, `SLUS-20645`) has been verified in EmuVR.
 
+Select GunCon 2 for player 1 with the frontend's controller UI or configuration:
+
+```ini
+input_libretro_device_p1 = "4"
+```
+
+Use `input_libretro_device_p2 = "4"` only when a game needs a second gun. Gun
+buttons use the frontend's standard light-gun trigger, reload, A/B/C, Start,
+Select, D-pad, and Pause bindings; Pause is exposed as the calibration shot.
+
 To match EmuVR's bundled-core convention, PS2 BIOS files are read directly from
 RetroArch's system directory (for example, `RetroArch/system/scph39001.bin`).
 Other PCSX2 data remains under `RetroArch/system/pcsx2/`.
@@ -281,7 +291,7 @@ CMake options common to all builds:
 ```
 
 The build produces `pcsx2_libretro.so`; install it into RetroArch's `cores/`
-directory. A PS2 BIOS image is required in `<system>/pcsx2/bios/`.
+directory. This EmuVR fork expects a PS2 BIOS image directly in `<system>/`.
 
 Notes for arm64:
 - Build against the same libc your frontend uses (a musl-built core will not
